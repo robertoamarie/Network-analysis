@@ -1,0 +1,775 @@
+---
+title: "Advanced genomics project N° 5 - Ecological Network analysis"
+author: "Roberto Amarie"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE}
+library(igraph)
+library(tidyverse)
+library(bipartite)
+library(reshape2)
+```
+
+# *INTRODUCTION*
+
+## Ecological networks
+
+Ecological networks are complex systems that represent the interactions among species within an ecosystem. These networks help us understand the structure and function of ecosystems, revealing how species interact and how these interactions influence biodiversity, stability, and ecosystem dynamics.
+
+While nodes always represent different species (or groups of species), the underlying links connecting them can be driven by many types of interactions that are very different in nature and in their role within the ecosyst em (e.g. a predation-pray relationship vs a relationship characterized by reciprocally beneficial dynamics).\
+This leads to the existance of different types of ecological networks, such as Food webs, Competition networks, Mutualistic Networks, Parassitic networks and Facilitation networks among the others, and\
+each of them is characterized by its own distinctive topologies and properties.
+
+Mutualistic Networks specifically are defined by interactions where both species benefit from it.\
+Their structure is often characterized by patterns where we can easily distinguish generalist and specialist species based on the extent of different partners they interact with: while specialist tend to pair with a few selected partners, generalist tend to have a high variety of interactors and consequently be of crucial role in maintaining the integrity of the network.\
+Additionally these networks are often characterized by the existence of multiple sets of functionally similar species that can be easily identified within the whole ecosystem.\
+Crucially, these network are generally bipartite in nature given the fact that the species involved generally belong to either one of two distinct groups and that all the interactions observed happen exclusively between species belonging to different groups and never within the same group.
+
+Although plant-pollinator network represent the most commonly studied type of mutualist network, also seed dispersal networks constitute an important body of research in the field. These systems are characterized by the interactions between plants and the animals that help disperse theirs seeds. The mutualistic nature of the interaction is given by the fact that while the animals benefits by feeding upon the fruits containing the seeds, the plants in turn obtain a method to colonize new terrains and expand over wide areas, which is crucial for preventing inbreeding and therefore maintaining their genetic diversity.
+
+## Aims of the analysis
+
+Understanding the mechanisms responsible for the stability and persistence of ecosystems is one of the greatest challenges in ecology. Despite several theoretical models have been proposed during the years, none so far managed to define a general rule that can explain how any system would respond upon perturbations events, such as extinctions of species within the ecosystem, invasions by novel species or even environmental changes.\
+This study aims to elucidate the specific topology of a mutualistic seed dispersal network and examine how various extinction patterns affect its complexity and robustness. By analyzing the structural changes that occur, one hopes to determine whether the ecosystem is resilient to species loss or if such events would trigger a cascade of secondary extinctions. In case of the latter, the research will try to identify keystone species within the network, whose absence would profoundly impact the entire ecosystem.
+
+------------------------------------------------------------------------
+
+# *THE ANALYSIS*
+
+## Loading the data
+
+The study was conducted using the dataset publicly available on the Web of Life database (<https://www.web-of-life.es/map.php?type=5>[).](#0)\
+It is derived from a study^[1]^ inspecting the frequency and strength of seed dispersal interactions between frugivores and fleshy-fruited plants within a Kenyan tropical rainforest ecosystem.\
+A frugivore is indeed an animal that thrives mostly on raw fruits or succulent fruit-like produce of plants such as roots, shoots, nuts and seeds. Mammal and bird species represent the majority of seed-dispersing species, nonetheless many other types of animals are considered such kind of seed dispersers.
+
+The data was provided as an interaction matrix recording the number of times an interaction between each pair of species was observed, which is a useful proxy to express their interaction strenght.\
+This matrix can be inspected directly to identify species that show a more generalist behaviour and tend to interact with a multitude of partners (e.g. the frugivore Pycnonotus barbatus or the unidentified plant species), but It is a very naive and time-consuming approach to determine which could be keystone species. A much better methodology would be utilizing it as an adjacency matrix for the creation of a bipartite network, as commonly found in ecological studies of seed dispersal systems.
+
+```{r, fig.width=10, fig.height=5}
+interaction_matrix <- read.csv("seed dispersal dataset/M_SD_034.csv",
+                          header = TRUE, row.names=1,
+                          sep = ",", stringsAsFactors = FALSE)
+
+interaction_matrix =  as.matrix(interaction_matrix)
+
+if(!any(is.na(interaction_matrix))){
+  df <- as.data.frame(as.table(interaction_matrix))
+  df$Var1 <- factor(df$Var1, levels = rev(levels(df$Var1)))
+}
+
+
+ggplot(df, aes(Var2, Var1, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  labs(title = paste("Interaction Matrix Heatmap (",
+                     dim(interaction_matrix)[1],
+                     "x",
+                     dim(interaction_matrix)[2],
+                     ")"),
+       x = "Frugivores", y = "fruited plants") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.title.x = element_text(size = 10),  
+        axis.title.y = element_text(size = 10),  
+        plot.title = element_text(hjust = 0.5, size = 20))
+
+```
+
+```{r}
+bipart_netw <- graph_from_biadjacency_matrix(interaction_matrix, directed = FALSE)
+
+if (is_bipartite(bipart_netw)){
+  print(paste0("My network is indeed bipartite and has ",
+               vcount(bipart_netw),
+               " nodes and ",
+               ecount(bipart_netw),
+               " edges"))
+} else {
+  print("The network is not bipartite.")
+}
+```
+
+```{r}
+par(mfrow = c(1, 1), mar = c(1, 1, 1, 1))
+plot(bipart_netw,
+     vertex.label = NA, 
+     vertex.color = ifelse(V(bipart_netw)$type,
+                           "orange", "green"),
+     vertex.size = 5,
+     main = "Bipartite Seed dispersal Network")
+
+legend("topright",  
+       legend = c("Frugivores", "Plants"),  
+       col = c("orange", "green"),  
+       pch = 21,  
+       pt.bg = c("orange", "green"), 
+       pt.cex = 2,  
+       bty = "n") 
+```
+
+## Exploratory analysis
+
+Inspecting the properties of the graph is a crucial initial step not only for the identification of the candidate species to be involved in the extinction simulation, but also to define the topological properties that characterize our network and how this might be altered or even disrupted due to our perturbation experiment.
+
+### Degree centality
+
+An important characteristic of the network to be taken into consideration is represented by the node degree (i.e. the number of connection it has to other nodes) and its distribution of values.\
+This is important for many different reasons:\
+First, the shape of the overall degree distribution is indicative of the level of structureness of the network, with a poisson distribution indicating a randomly formed network which is very distant from the approximate power-law distribution of real scale-free network.\
+Second, it is a good practice to confirm the bipartite nature of a network by verifying that the two groups of species under scrutiny display separate and distinct degree distribution when plotted individually.\
+Finally, it allows to distinguish generalist species that interact with a multitude of other species (high degree) from the specialist ones that display the opposite behaviour (low degree); thus already giving an interesting hint on which species might play a crucial role in the network resiliency.
+
+```{r}
+degree_centrality <- igraph::degree(bipart_netw, mode="all")
+degree_frugivores <- igraph::degree(bipart_netw, mode = "out", 
+                                    v= V(bipart_netw)[V(bipart_netw)$type == TRUE])
+degree_plants <- igraph::degree(bipart_netw, mode = "in",
+                                v= V(bipart_netw)[V(bipart_netw)$type == FALSE])
+
+
+# setting up useful variables for nice plotting and legend
+overall_df <- data.frame(degree = degree_centrality)
+overall_df$type <- "Overall"
+
+plant_df <- data.frame(degree = degree_plants)
+plant_df$type <- "Plant"
+
+frugivores_df <- data.frame(degree = degree_frugivores)
+frugivores_df$type <- "Frugivores"
+
+combined_df <- rbind(overall_df, plant_df, frugivores_df)
+combined_df$type <- factor(combined_df$type, levels = c("Overall", "Plant", "Frugivores"))
+
+
+
+# Plot
+ggplot(combined_df, aes(x = degree, fill = type)) +
+  geom_histogram(bins = 20, color = "black", alpha = 0.7) +
+  scale_fill_manual(name = "Type",
+                    values = c("Overall" = "grey",
+                               "Plant" = "green",
+                               "Frugivores" = "orange")) +
+  labs(title = "Degree Distribution",
+       x = "Degree",
+       y = "Frequency") +
+  theme_minimal() +
+  facet_wrap(~ type, ncol = 1, scales = "fixed")
+
+```
+
+```{r}
+# identify the top 10% degree nodes
+top10perc_degree <- names(sort(degree_centrality, decreasing = TRUE)
+                      )[1:ceiling(0.1 * length(degree_centrality))]
+
+# setting up useful variables for nice plotting and legend
+node_colors <- rep("grey", vcount(bipart_netw)) 
+node_colors[V(bipart_netw)$name %in% top10perc_degree] <- "gold"  
+
+node_labels <- rep("", vcount(bipart_netw)) 
+top_labels <- paste(1:length(top10perc_degree)) 
+node_labels[V(bipart_netw)$name %in% top10perc_degree] <- top_labels
+
+legend_df <- data.frame(
+  Number = 1:length(top10perc_degree),
+  Name = top10perc_degree
+)
+
+# plotting the network and showing the nodes identifies
+par(mfrow = c(1, 1), mar = c(1, 4, 1, 8)) 
+plot(bipart_netw,
+     vertex.label = node_labels,
+     vertex.label.cex = 0.5,    
+     vertex.label.color = "black",  
+     vertex.label.dist = 0,     
+     vertex.color = node_colors,
+     vertex.size = 5,
+     main = "Network Highlighting 10% Top Degree Nodes")
+legend("right", 
+       legend = paste(legend_df$Number, legend_df$Name, sep = ": "), 
+       col = "gold", 
+       pch = 21, 
+       pt.bg = "gold",
+       title = "10% Top degree nodes ",
+       bty = "n",
+       cex = 0.7,
+       xpd = TRUE,
+       inset = c(-0.3, 0))
+
+```
+
+```{r}
+bottom20perc_degree <- names(sort(degree_centrality, decreasing = FALSE)
+                         )[1:ceiling(0.2 * length(degree_centrality))]
+
+# setting up useful variables for nice plotting and legend
+node_colors <- rep("grey", vcount(bipart_netw)) 
+node_colors[V(bipart_netw)$name %in% bottom20perc_degree] <- "brown"  
+
+node_labels <- rep("", vcount(bipart_netw)) 
+bottom_labels <- paste(1:length(bottom20perc_degree)) 
+node_labels[V(bipart_netw)$name %in% bottom20perc_degree] <- bottom_labels
+
+legend_df <- data.frame(
+  Number = 1:length(bottom20perc_degree),
+  Name = bottom20perc_degree
+)
+
+# plotting the network and showing the nodes identifies
+par(mfrow = c(1, 1), mar = c(1, 4, 1, 8)) 
+plot(bipart_netw,
+     vertex.label = node_labels,
+     vertex.label.cex = 0.4,    
+     vertex.label.color = "white",  
+     vertex.label.dist = 0,     
+     vertex.color = node_colors,
+     vertex.size = 5,
+     main = "Network Highlighting 20% Least Degree Nodes")
+legend("right", 
+       legend = paste(legend_df$Number, legend_df$Name, sep = ": "), 
+       col = "brown", 
+       pch = 21, 
+       pt.bg = "brown",
+       title = "20% Least degree Nodes",
+       bty = "n",
+       cex = 0.7,
+       xpd = TRUE,
+       inset = c(-0.3, 0)) 
+```
+
+###  Betweenness centrality
+
+This node centrality measure quantifies how often a species lies on the shortest path between pairs of other species. Nodes with high betweenness centrality act as a “bridge” or connector between different parts of the network, making them key intermediaries that are important for maintaining network connectivity and enabling indirect interactions between different species that might have not been connected otherwise.\
+Thus, the important structural role of these nodes makes them interesting candidates to potentially be some keystone species of our seed dispersal network and therefore one of the extinction patters simulated will later be targeted towards the most between nodes.
+
+```{r}
+betweenness_centrality <- igraph::betweenness(bipart_netw, directed = FALSE)
+
+top10perc_betweenness <- names(sort(betweenness_centrality, decreasing = TRUE)
+                               )[1:ceiling(0.1 * length(betweenness_centrality))]
+
+# setting up useful variables for nice plotting and legend
+node_colors <- rep("grey", vcount(bipart_netw)) 
+node_colors[V(bipart_netw)$name %in% top10perc_betweenness] <- "gold"  
+
+node_labels <- rep("", vcount(bipart_netw)) 
+top_labels <- paste(1:length(top10perc_betweenness)) 
+node_labels[V(bipart_netw)$name %in% top10perc_betweenness] <- top_labels
+
+legend_df <- data.frame(
+  Number = 1:length(top10perc_betweenness),
+  Name = top10perc_betweenness
+)
+
+# plotting the network and showing the nodes identifies
+par(mfrow = c(1, 1), mar = c(1, 4, 1, 8)) 
+plot(bipart_netw,
+     vertex.label = node_labels,
+     vertex.label.cex = 0.5,    
+     vertex.label.color = "black",  
+     vertex.label.dist = 0,     
+     vertex.color = node_colors,
+     vertex.size = 5,
+     main = "Network Highlighting 10% Top Betweenness Nodes")
+legend("right", 
+       legend = paste(legend_df$Number, legend_df$Name, sep = ": "), 
+       col = "gold", 
+       pch = 21, 
+       pt.bg = "gold",
+       title = "10% Top betweenness nodes ",
+       bty = "n",
+       cex = 0.7,
+        xpd = TRUE,
+       inset = c(-0.3, 0))
+```
+
+### Assortativity Coefficient
+
+In ecological networks, assortativity helps identify whether species with similar characteristics tend to interact more frequently, or whether species with differing characteristics are more likely to form interactions. Different kind of assortativity measures exist based on the choice of similarity between nodes that is being used, but the most common one is based on the degree of the nodes.\
+This is usually quantified based on the pearson correlation coefficient between the degree of all pairs of nodes, an is expressed via the assortativity coefficient that ranges from -1 to 1, with the negative extreme indicate perfect disassortativity (nodes preferentially connect to dissimilar nodes) and the opposite for the positive end.\
+It's important to monitor this property throughout our experiment since mutualistic networks are often know to display disassortativity by degree which is a useful mechanism that the system uses to enhance biodiversity and network resistance, as generalists can buffer the loss of specialists, and therefore maintain network functionality.
+
+```{r}
+assort_coeff <- assortativity_degree(bipart_netw, directed = FALSE)
+
+
+# create the color gradients based on the degree
+degree_frugivores_normalized <- (degree_frugivores - min(degree_frugivores)
+                                 ) / (max(degree_frugivores) - min(degree_frugivores))
+colors_frugivores <- colorRampPalette(c("lightyellow", "darkorange")
+                                      )(100)[as.numeric(cut(degree_frugivores_normalized, breaks = 100))]
+
+degree_plants_normalized <- (degree_plants - min(degree_plants)
+                             ) / (max(degree_plants) - min(degree_plants))
+colors_plants <- colorRampPalette(c("lightgreen", "darkgreen")
+                                  )(100)[as.numeric(cut(degree_plants_normalized, breaks = 100))]
+
+node_colors <- rep(NA, vcount(bipart_netw))
+node_colors[V(bipart_netw)$type == TRUE] <- colors_frugivores
+node_colors[V(bipart_netw)$type == FALSE] <- colors_plants
+
+
+
+# plotting the network and showing the nodes identifies
+par(mfrow = c(1, 1), mar = c(5, 4, 1, 8)) 
+plot(bipart_netw,
+     vertex.label = NA,  
+     vertex.color = node_colors, 
+     vertex.size = 5, 
+     sub = paste0("Assortativity coefficient = ", round(assort_coeff, digits = 2)),
+     main = "Network shaded by node degree centrality")
+     
+
+legend("right", 
+       legend = c("Frugivores - Low Degree", "Frugivores - High Degree",
+                  "Plants - Low Degree", "Plants - High Degree"), 
+       fill = c(colorRampPalette(c("lightyellow", "darkorange"))(2),
+                colorRampPalette(c("lightgreen", "darkgreen"))(2)),
+       title = "Degree Centrality",
+       cex = 0.7,
+       xpd = TRUE,
+       inset = c(-0.3, 0))
+
+```
+
+As expected given the nature of the network and also by visualizing the plot of the network shaded by degree, the system does display more of a dissortative behavior, despite it being only moderate as highlighted by the value of the assortative coefficient.
+
+### Nestedness
+
+An interesting property of the common to mutualistic network that should be taken into consideration in the analysis is nestedness, which is occurring when interactions are organized such that species with fewer interactions (specialists) tend to interact with a subset of the partners of species with more interactions (generalists). Nestedness enhances stability in mutualistic networks because it allows for functional redundancy. If a generalist is present, it can maintain the interactions even if certain species go extinct, preventing the collapse of the network.\
+A common hint suggesting the presence of nestedness is the clustering of the signal on top of the top left corner of the interaction matrix when reordered by degree.^[2]^ \
+Nonetheless, to claim that the plant-frugivore network under analysis present this characteristic, one of the various quantitative approaches to measure nestedness must be employed as well.\
+Here two alternative approaches are used to corroborate each other's findings:
+
+-   *NODF metric* (Nestedness metric based on Overlap and Decreasing Fill),\
+    which by looking at the rows and columns in the matrix to assess the nestedness assigning a numeric value that ranges between 0 (no nestedness) to 100 (perfect nestedness)
+
+-   *Matrix Temperature*, \
+    which indirectly quantifies nestedness by describing how "surpising" or "unordered" a matrix is. Lower values are expected to indicate a more ordered and nested scenario.
+
+```{r, fig.width=10, fig.height=5}
+
+# Reorder the interaction matrix by degree and generate a df 
+frugivore_order <- order(degree_frugivores, decreasing = TRUE)
+plant_order <- order(degree_plants, decreasing = TRUE)
+interaction_matrix_reordered <- interaction_matrix[plant_order, frugivore_order]
+df_reordered <- as.data.frame(as.table(interaction_matrix_reordered))
+df_reordered$Var1 <- factor(df_reordered$Var1,
+                            levels = rev(levels(df_reordered$Var1)))
+
+# Plot the reordered heatmap
+ggplot(df_reordered, aes(Var2, Var1, fill = Freq)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  labs(title = paste("Interaction Matrix Heatmap (Reordered by Degree Centrality)"),
+       x = "Frugivores", y = "Fruited Plants") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5, size = 20))
+
+# Quantitative approach
+print(nestednodf(interaction_matrix))
+print(nestedtemp(interaction_matrix))
+```
+
+Both results show only a moderate level of nestedness as hinted by the matrix heatmap and relatively low values of the metrics. Nonetheless it's hard the lack of more pronounced values and sharp separations make it hard to take a stronger claim on nestedness other than the network clearly not showing either a random pattern of interconnection. This is uncertainty however is not surprising given the high level of sparsity of the data with a matrix fill of only 14%.
+
+### Module detection
+
+Another structural property of the network that can be interesting to analyse is its modularity, namely its tendency to have subsets of nodes that interact more with each other than with nodes outside the subset.
+
+The identification of these relatively independent modules (a.k.a. clusters, compartments or communities) is relevant due to the fact that they might be reflecting different functional groups within the network, such *specialization patterns*, where certain plants are primarily dispersed by a specific group of animals, or *geographical clusters*, where dispersal interactions are limited to certain locations.\
+For instance, a module might consist of plant species that are dispersed by the same bird species, suggesting a functional relationship or co-evolutionary patterns.\
+It might be interesting to see if the perturbations experiment might disproportionatley affect a module over the others or impact the overall number of such modules identified, or on the contrary be a resiliency mechanism that can mitigate the effects of the species losses thanks to the presence of distinct yet functionally similar species that were not removed.
+
+To perform the community finding I therefore employed a multi-level modularity optimization algorithm, which is based on maximixing the commonly used quantitative modularity measure in conjunction to a hierarchical approach.
+
+```{r, fig.width=10}
+louvain_clust <- cluster_louvain(bipart_netw)
+membership <- membership(louvain_clust)
+
+plot(bipart_netw,
+     vertex.color = membership + 1,
+     vertex.size=5,
+     vertex.label=NA,
+     edge.arrow.size=0.6,
+     main="Network with nodes colored by cluster membership")
+```
+
+```{r}
+print(paste0("the network is composed of ",length(louvain_clust)," modules"))
+
+## Function to color text
+## unfortuntaley it works only on the RStudio console and not on the knitted HTML
+# color_text <- function(text, color) {
+#   if (color == "green") {
+#     return(paste0("\033[32m", text, "\033[0m"))  # Green for plants
+#   } else if (color == "orange") {
+#     return(paste0("\033[33m", text, "\033[0m"))  # Orange for frugivores
+#   } else {
+#     return(text)  # Default no color
+#   }
+# }
+
+
+# Loop through clusters and print species by type (plants or frugivores)
+for (i in unique(membership)) {
+  cat("Cluster", i, ":\n")
+  cluster_members <- which(membership == i)
+  frugivores <- cluster_members[V(bipart_netw)$type[cluster_members] == 1]
+  plants <- cluster_members[V(bipart_netw)$type[cluster_members] == 0]
+  
+  # Quantify the number of all and each
+  cat("Total Nodes =", length(cluster_members),
+      ", Frugivores =", length(frugivores),
+      ", Plants =", length(plants), "\n")
+  
+  # Print plant species in green
+  if (length(plants) > 0) {
+    # cat(color_text("Plants:", "green"), "\n")
+    # cat(color_text(paste(names(plants), collapse = ", "), "green"), "\n")
+    cat("PLANTS: \t")
+    cat(paste(names(plants), collapse = ", "), "\n")
+  }
+  
+  # Print frugivore species in orange
+  if (length(frugivores) > 0) {
+    # cat(color_text("Frugivores:", "orange"), "\n")
+    # cat(color_text(paste(names(frugivores), collapse = ", "), "orange"), "\n\n")
+    cat("FRUGIVORES: \t")
+    cat(paste(names(frugivores), collapse = ", "), "\n\n")
+  }
+}
+```
+
+### Component analysis
+
+An interesting structural property of the network to keep under scrutiny is represented by its number of components, which consists in verifying if the network is fully connected or if there are additional isolated graphs where a small subset of plants interact only with few dispersers in a very specialized manner compared to the rest of the network.\
+By gathering understanding of the global connectivity and cohesion of the network, this analysis results into useful insights into the resiliency and robustness of the network to node removals and the disruptive effects that might arise thereafter in terms of species losses and decreased biodiversity.
+
+```{r}
+if (is_connected(bipart_netw) && count_components(bipart_netw) == 1) {
+  largest_component = largest_component(bipart_netw)
+  par(mfrow = c(1, 1), mar = c(1, 1, 1, 1))
+  plot(largest_component,
+     vertex.label = NA, 
+     vertex.color = ifelse(V(largest_component)$type,
+                           "orange", "green"),
+     vertex.size = 5,
+     main = "The largest component is the full network itself")
+
+  legend("topright",  
+       legend = c("Frugivores", "Plants"),  
+       col = c("orange", "green"),  
+       pch = 21,  
+       pt.bg = c("orange", "green"), 
+       pt.cex = 2,  
+       bty = "n") 
+} else {
+  all_components =  clusters(bipart_netw)
+  all_components$csize
+}
+```
+
+## *Node removal experiments*
+
+As anticipated, three different extinction scenarios are going to be simulated in this study, involving the loss of:\
+- top 10% species with highest degree centrality\
+- bottom 20% species with lowest degree centrality\
+- top 10% species with highest betweenness centrality
+
+To easily inspect the topological changes arising in these perturbed networks, a function has been first defined to automatically compute all the statistics and plots that were previously used to monitor the status and properties of the original network.
+
+```{r}
+node_removal_analysis <- function(network) {
+  
+  ### VISUALIZING THE NEW NETWORK ################################################
+  if (is_bipartite(network)){
+    print(paste0("My network is indeed bipartite and has ", vcount(network), " nodes and ", ecount(network), " edges"))
+  } else {
+    print("The network is not bipartite.")
+  }
+  
+  par(mfrow = c(1, 1), mar = c(1, 1, 1, 1))
+  p0 <- plot(network,
+     vertex.label = NA, 
+     vertex.color = ifelse(V(network)$type,
+                           "orange", "green"),
+     vertex.size = 5,
+     main = "Bipartite Network")
+
+  legend("topright",  
+       legend = c("Frugivores", "Plants"),  
+       col = c("orange", "green"),  
+       pch = 21,  
+       pt.bg = c("orange", "green"), 
+       pt.cex = 2,  
+       bty = "n") 
+  
+     
+  ### DEGREE ANALYSIS ##################################################
+  degree_centrality <- igraph::degree(network, mode="all")
+  degree_frugivores <- igraph::degree(network, mode = "out", 
+                                    v = V(network)[V(network)$type == TRUE])
+  degree_plants <- igraph::degree(network, mode = "in",
+                                v = V(network)[V(network)$type == FALSE])
+
+
+  # setting up useful variables for nice plotting and legend
+  overall_df <- data.frame(degree = degree_centrality)
+  overall_df$type <- "Overall"
+
+  plant_df <- data.frame(degree = degree_plants)
+  plant_df$type <- "Plant"
+
+  frugivores_df <- data.frame(degree = degree_frugivores)
+  frugivores_df$type <- "Frugivores"
+
+  combined_df <- rbind(overall_df, plant_df, frugivores_df)
+  combined_df$type <- factor(combined_df$type, levels = c("Overall", "Plant", "Frugivores"))
+
+  # Plotting degree distributions
+  p1 <- ggplot(combined_df, aes(x = degree, fill = type)) +
+    geom_histogram(bins = 20, color = "black", alpha = 0.7) +
+    scale_fill_manual(name = "Type",
+                    values = c("Overall" = "grey",
+                               "Plant" = "green",
+                               "Frugivores" = "orange")) +
+    labs(title = "Degree Distribution",
+       x = "Degree",
+       y = "Frequency") +
+    theme_minimal() +
+    facet_wrap(~ type, ncol = 1, scales = "fixed")
+  print(p1)
+  
+  ### ASSORTATIVITY COEFFICIENT ################################################
+  assort_coeff <- assortativity_degree(network, directed = FALSE)
+
+  # create the color gradients based on the degree
+  degree_frugivores_normalized <- (degree_frugivores - min(degree_frugivores)
+                                 )/(max(degree_frugivores)-min(degree_frugivores))
+  colors_frugivores <- colorRampPalette(c("lightyellow","darkorange")
+            )(100)[as.numeric(cut(degree_frugivores_normalized, breaks = 100))]
+
+  degree_plants_normalized <- (degree_plants - min(degree_plants)
+                             ) / (max(degree_plants) - min(degree_plants))
+  colors_plants <- colorRampPalette(c("lightgreen", "darkgreen")
+                  )(100)[as.numeric(cut(degree_plants_normalized, breaks = 100))]
+
+  node_colors <- rep(NA, vcount(network))
+  node_colors[V(network)$type == TRUE] <- colors_frugivores
+  node_colors[V(network)$type == FALSE] <- colors_plants
+
+  # plotting the network and showing the nodes identifies
+  par(mfrow = c(1, 1), mar = c(5, 4, 1, 8)) 
+  p2 <- plot(network,
+       vertex.label = NA,  
+       vertex.color = node_colors, 
+      vertex.size = 5, 
+    sub = paste0("Assortativity coefficient = ", round(assort_coeff, digits = 2)),
+       main = "Network shaded by node degree centrality")
+     
+  legend("right", 
+         legend = c("Frugivores - Low Degree", "Frugivores - High Degree",
+                    "Plants - Low Degree", "Plants - High Degree"), 
+         fill = c(colorRampPalette(c("lightyellow", "darkorange"))(2),
+                colorRampPalette(c("lightgreen", "darkgreen"))(2)),
+        title = "Degree Centrality",
+        cex = 0.7,
+        xpd = TRUE,
+        inset = c(-0.3, 0))
+  
+  print(p2)
+  
+  
+  ### NESTEDNESS ##################################################
+  int_matrix <- as_biadjacency_matrix(network, sparse = FALSE)
+  
+  # Reorder the interaction matrix by degree and generate a df 
+  frugivore_order <- order(degree_frugivores, decreasing = TRUE)
+  plant_order <- order(degree_plants, decreasing = TRUE)
+  int_matrix_reordered <- int_matrix[plant_order, frugivore_order]
+  df_reordered <- as.data.frame(as.table(int_matrix_reordered))
+  df_reordered$Var1 <- factor(df_reordered$Var1,
+                            levels = rev(levels(df_reordered$Var1)))
+
+  # Plot the reordered heatmap
+  p3 <- ggplot(df_reordered, aes(Var2, Var1, fill = Freq)) +
+    geom_tile() +
+    scale_fill_gradient(low = "white", high = "blue") +
+    labs(title = paste("Interaction Matrix Heatmap (Reordered by Degree Centrality)"),
+        x = "Frugivores", y = "Fruited Plants") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 5),
+          axis.text.y = element_text(size = 5),
+          axis.title.x = element_text(size = 10),
+          axis.title.y = element_text(size = 10),
+          plot.title = element_text(hjust = 0.5, size = 15))
+  
+  print(p3)
+  print(nestednodf(int_matrix))
+  print(nestedtemp(int_matrix))
+
+
+  ### MODULE IDENTIFICATION ##################################################
+  
+  louvain_clust <- cluster_louvain(network)
+  print(paste0("the network is composed of ",length(louvain_clust)," modules"))
+
+  membership <- membership(louvain_clust)
+
+  # # Function to color text
+  # color_text <- function(text, color) {
+  #   if (color == "green") {
+  #     return(paste0("\033[32m", text, "\033[0m"))  # Green for plants
+  #   } else if (color == "orange") {
+  #     return(paste0("\033[33m", text, "\033[0m"))  # Orange for frugivores
+  #   } else {
+  #     return(text)  # Default no color
+  #   }
+  # }
+
+
+  # Loop through clusters and print species by type (plants or frugivores)
+  for (i in unique(membership)) {
+    cat("Cluster", i, ":\n")
+    cluster_members <- which(membership == i)
+    frugivores <- cluster_members[V(network)$type[cluster_members] == 1]
+    plants <- cluster_members[V(network)$type[cluster_members] == 0]
+  
+    # Quantify the number of all and each
+    cat("Total Nodes =", length(cluster_members), ", Frugivores =", length(frugivores), ", Plants =", length(plants), "\n")
+  
+    # Print plant species in green
+    if (length(plants) > 0) {
+      # cat(color_text("Plants:", "green"), "\n")
+      # cat(color_text(paste(names(plants), collapse = ", "), "green"), "\n")
+      cat("PLANTS: \t")
+      cat(paste(names(plants), collapse = ", "), "\n")
+    }
+  
+    # Print frugivore species in orange
+    if (length(frugivores) > 0) {
+      # cat(color_text("Frugivores:", "orange"), "\n")
+      # cat(color_text(paste(names(frugivores), collapse = ", "), "orange"), "\n\n")
+      cat("FRUGIVORES: \t")
+      cat(paste(names(frugivores), collapse = ", "), "\n\n")
+      }
+    }
+  
+  p4 <- plot(network,
+     vertex.color = membership + 1,
+     vertex.size=5,
+     vertex.label=NA,
+     edge.arrow.size=0.6,
+     main="Network with nodes colored by cluster membership")
+  print(p4)
+  
+  
+  ### COMPONENT ANALYSIS ##################################################
+  if (is_connected(network) && count_components(network) == 1) {
+    largest_component = largest_component(network)
+    par(mfrow = c(1, 1), mar = c(1, 1, 1, 1))
+    p5 <- plot(largest_component,
+      vertex.label = NA, 
+      vertex.color = ifelse(V(largest_component)$type,
+                           "orange", "green"),
+       vertex.size = 5,
+      main = "The largest component is the full removed network itself (after node removal)")
+
+    legend("topright",  
+         legend = c("Frugivores", "Plants"),  
+         col = c("orange", "green"),  
+         pch = 21,  
+         pt.bg = c("orange", "green"), 
+         pt.cex = 2,  
+         bty = "n") 
+    print(p5)
+  } else {
+    print(paste0("The network has fragmented into ",
+                 count_components(network), " components"))
+    
+    all_components =  clusters(network)
+    print(all_components$csize)
+    
+    ##  create an histogram with all the frequency of sizes of the compartments
+    # component_sizes <- component_distribution(without_top10perc_degree)
+    # size_counts <- component_sizes*count_components(network)
+    # possible_sizes <- seq_along(component_sizes)
+    # df <- data.frame(Size = possible_sizes, Count = size_counts)
+    # p3 <- ggplot(df, aes(x = Size, y = Count)) +
+    #   geom_bar(stat = "identity", fill = "steelblue", color = "black") +
+    #   labs(title = "Component Size Distribution",
+    #        x = "Component Size", y = "Count") +
+    #   theme_minimal()
+    # print(p3)
+  }
+  
+}
+```
+
+### Top 10% Degree 
+
+As shown by the plots below, removing the most generalist species in the network has important effects on the system.\
+Firstly, the connectance of the network decreases drammatically given that upon the removal of only 13 species the number of edges drastically falls from 419 to 145. \
+More importantly, the network does seem to be somewhat resilient to withstand this huge loss of interconnection considering that as a consequence of the node removal we can don't have a complete disruption of the network. Nonetheless it's evident how it still got markedly affected by the event given that we can observe the secondary extinction of 21 frugivores species that become totally isolated from the rest of the network.\
+Even that little modularity and the nestedness of the network seem to be disrupted. \
+In the case of the first indeed even for the major modules remained that are not the ones of the secondary extinctions, it's hard to see a good overlap with the original modules except for few pairs of species. \
+While for the nestedness the little signal previously visible in the interaction matrix dissipated into a more random pattern, let alone that this is coupled with a sparser fill and more unreliable assessment.
+
+```{r}
+without_top10perc_degree <- delete_vertices(bipart_netw,
+                                 V(bipart_netw)[top10perc_degree])
+
+node_removal_analysis(without_top10perc_degree)
+```
+
+### Bottom 20% Degree
+
+On the opposite end, removing the most specialist species does not seem to affect the system in significant ways. No secondary extinction events are recorded and the overall properties of the original system are somewhat preserved, if not improved as for the case of the nestedness.
+
+```{r}
+without_bottom20perc_degree <- delete_vertices(bipart_netw,
+                                 V(bipart_netw)[bottom20perc_degree])
+
+node_removal_analysis(without_bottom20perc_degree)
+```
+
+### Top 10% Betweenness
+
+The last extinction pattern shows shows a behavior very similar to the one of the removal of the generalist species, which is not surprising given the good amount of overlap in terms of species involved within these two subsets of species.\
+Nonetheless, it's important to stress that those few species peculiar to the top 10% betweenness still had a significant higher impact in terms of secondary extinctions events, which account for 33 species this time. \
+This increased biodiversity loss is not surprising when considering the important cohesive role of this species in acting as bridges and connector within the netwok.
+
+```{r}
+without_top10perc_betweenness <- delete_vertices(bipart_netw,
+                                 V(bipart_netw)[top10perc_betweenness])
+
+node_removal_analysis(without_top10perc_betweenness)
+```
+
+# *CONCLUSIONS*
+
+By testing different extinction events on the Kenyan seed dispersal network, it is evident that the most central nodes both in terms of degree and betwenness seem to have the greatest impact on the topology of the network. Therefore the candidates that are most likely to be the keystone species of the network will be the ones shared between these two groups, such as the two Unidentified plant species or the *Sylvia atricapilla* and *Andropadus latirostris* birds among the others.\
+Although the study was applied to an example of a macroscopic ecological network, studies^[3]^ have shown that some of the principle driving the stability and dynamics of these ecosystem are still valid also for the microscopic world of bacteria, therefore possibly enabling the translation of the benefits of learning how to effectively model ecological network and harness topological measurements also into the ability of controlling and manipulating the highly cooperative microbial ecosystems in a more efficient way, which can be of crucial relevance both for health reasons and environmental ones.
+
+# *REFERENCES*
+
+^[1]^ Schleuning, Matthias, Nico Blüthgen, Martina Flörchinger, Julius Braun, H. Martin Schaefer, e Katrin Böhning-Gaese. «Specialization and Interaction Strength in a Tropical Plant–Frugivore Network Differ among Forest Strata». *Ecology* 92, fasc. 1 (2011): 26–36. <https://doi.org/10.1890/09-1842.1>.
+
+[2] Mariani, Manuel Sebastian, Zhuo-Ming Ren, Jordi Bascompte, e Claudio Juan Tessone. «Nestedness in complex networks: Observation, emergence, and implications». *Physics Reports*, Nestedness in complex networks: Observation, emergence, and implications, 813 (15 giugno 2019): 1–90. <https://doi.org/10.1016/j.physrep.2019.04.001>.
+
+[3] Grilli, Jacopo. “Macroecological Laws Describe Variation and Diversity in Microbial Communities.” *Nature Communications* 11, no. 1 (September 21, 2020): 4743. <https://doi.org/10.1038/s41467-020-18529-y>.
+
+Proulx, S, D Promislow, and P Phillips. “Network Thinking in Ecology and Evolution.” *Trends in Ecology & Evolution* 20, no. 6 (June 2005): 345–53. <https://doi.org/10.1016/j.tree.2005.04.004>.
+
+Jacquet, Claire, Charlotte Moritz, Lyne Morissette, Pierre Legagneux, François Massol, Philippe Archambault, and Dominique Gravel. “No Complexity–Stability Relationship in Empirical Ecosystems.” *Nature Communications* 7, no. 1 (August 24, 2016): 12573. [https://doi.org/10.1038/ncomms1](https://doi.org/10.1038/ncomms12573) [2573](https://doi.org/10.1038/ncomms12573).
+
+Memmott, Jane, Nickolas M. Waser, e Mary V. Price. «Tolerance of pollination networks to species extinctions». *Proceedings of the Royal Society of London. Series B: Biological Sciences* 271, fasc. 1557 (22 dicembre 2004): 2605–11. <https://doi.org/10.1098/rspb.2004.2909>.
+
+------------------------------------------------------------------------
